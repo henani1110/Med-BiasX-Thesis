@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import csv
 import argparse
 from datetime import datetime
 from pprint import pprint
@@ -161,6 +162,17 @@ def write_run_report(report_path, args, device, run_status, best_epoch, best_val
         f.write('\n'.join(lines))
 
 
+def write_history(history_json_path, history_csv_path, history_rows):
+    with open(history_json_path, 'w', encoding='utf-8') as f:
+        json.dump(history_rows, f, ensure_ascii=False, indent=2)
+
+    with open(history_csv_path, 'w', encoding='utf-8', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=['epoch', 'train_loss', 'train_acc', 'eval_score'])
+        writer.writeheader()
+        for row in history_rows:
+            writer.writerow(row)
+
+
 if __name__ == '__main__':
     args = parse_args()
     dataset = args.dataset
@@ -269,6 +281,9 @@ if __name__ == '__main__':
         current_epoch = start_epoch
         latest_epoch = start_epoch
         run_status = 'running'
+        history_rows = []
+        history_json_path = os.path.join(run_dir, 'history.json')
+        history_csv_path = os.path.join(run_dir, 'history.csv')
 
         latest_path = args.name + '.latest'
         best_path = args.name
@@ -291,7 +306,7 @@ if __name__ == '__main__':
             for epoch in range(start_epoch, args.epochs):
                 current_epoch = epoch
                 print("training epoch {:03d}".format(epoch))
-                tb_count = train(model, metric_fc, optim, train_loader, loss_fn, tracker, writer, tb_count, epoch, args)
+                tb_count, train_loss, train_acc = train(model, metric_fc, optim, train_loader, loss_fn, tracker, writer, tb_count, epoch, args)
 
                 if not (config.train_set == 'train+val' and epoch in range(args.epochs - 3)):
                     # save for the last three epochs
@@ -324,6 +339,15 @@ if __name__ == '__main__':
                         torch.save(results, best_path)
 
                 latest_epoch = epoch + 1
+
+                history_rows.append({
+                    'epoch': latest_epoch,
+                    'train_loss': train_loss,
+                    'train_acc': train_acc,
+                    'eval_score': float(eval_score)
+                })
+                write_history(history_json_path, history_csv_path, history_rows)
+
                 write_run_report(
                     report_path,
                     args,

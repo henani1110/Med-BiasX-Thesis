@@ -175,7 +175,8 @@ def train(model, m_model, optim, train_loader, loss_fn, tracker, writer, tb_coun
             optim.zero_grad()
             continue
         
-        writer.add_scalars('data/losses', {
+        writer.add_scalars('data/train', {
+            'loss': float(loss.item())
         }, tb_count)
         tb_count += 1
 
@@ -211,7 +212,9 @@ def train(model, m_model, optim, train_loader, loss_fn, tracker, writer, tb_coun
         loader.set_postfix(loss=fmt(loss_trk.mean.value),
                            acc=fmt(acc_trk.mean.value))
 
-    return tb_count
+    train_loss = float(loss_trk.mean.value) if loss_trk.mean.value is not None else float('nan')
+    train_acc = float(acc_trk.mean.value) if acc_trk.mean.value is not None else float('nan')
+    return tb_count, train_loss, train_acc
 
 
 #Evaluation code
