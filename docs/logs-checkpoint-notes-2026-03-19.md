@@ -1,41 +1,47 @@
-# Logs 目录与检查点保存说明（2026-03-19）
+# Logs 目录与训练记录说明（2026-03-19）
 
-## 现象
-训练过程中或中止后，logs 目录经常看起来没有变化，容易误判为“该目录无用途”。
+## 设计目标
+为每次训练生成独立目录，避免不同实验互相覆盖，并提供可直接阅读的结果文档。
 
-## 根因
-在原训练逻辑中，模型保存依赖于严格条件：
-- 仅当 `eval_score > best_val_score` 才会保存。
-- 如果首轮评估值与初始 best 值相同（例如都为 0.0），则不会触发保存。
-- 用户手动中断训练（KeyboardInterrupt）时，没有中断检查点保存逻辑。
+## 当前实现
+已在 [main_arcface.py](main_arcface.py) 实现以下机制：
 
-因此可能出现：
-- 训练跑了一段时间，但 logs 内没有新文件。
-- 手动中止后，进度无法恢复。
+1. 每次新训练创建独立 run 目录
+- 示例：`logs/test-VQA-20260319-173200/`
+- 目录内仅存放这一次训练的检查点和报告。
 
-## 本次修复
-已在 [main_arcface.py](main_arcface.py) 调整检查点策略：
+2. 检查点分角色保存
+- `test-VQA`：best 检查点。
+- `test-VQA.latest`：每个 epoch 都刷新。
+- `test-VQA.interrupt`：仅在手动中止训练时保存。
 
-1. 每轮保存最新检查点
-- 每个 epoch 结束后都会保存：`<name>.latest`
-- 作用：保证训练随时可恢复，不依赖“是否达到最优”。
+3. 自动生成 run 报告文档
+- 每个 run 目录都会生成 `run-report.md`。
+- 报告包含：
+	- 运行状态（running / finished / interrupted）
+	- 数据集、模型、设备、目标 epoch
+	- latest_epoch、best_epoch、best_val_score
+	- best/latest/interrupt 文件是否存在、路径、大小、更新时间
+	- 本次运行使用的完整参数（Args）
 
-2. 最优检查点独立保存
-- 当 `eval_score >= best_val_score` 时保存：`<name>`
-- 作用：保留当前最佳模型。
+4. 报告会在训练过程中持续刷新
+- 每个 epoch 结束后更新一次 `run-report.md`。
+- 训练结束或中断时再更新一次最终状态。
 
-3. 中断兜底保存
-- 捕获 KeyboardInterrupt 时保存：`<name>.interrupt`
-- 作用：用户停止训练后仍可从中断点恢复。
+## 使用方式
+命令示例：
 
-4. 保存目录自动创建
-- 若目标目录不存在，自动创建后再保存。
+```bash
+python main_arcface.py --name test-VQA --gpu 0 --dataset slake-cp
+```
 
-## 修复后的预期文件
-在 `--name test-VQA` 时，logs 目录下可能出现：
-- `test-VQA`（best）
-- `test-VQA.latest`（latest）
-- `test-VQA.interrupt`（仅手动中断时出现）
+运行后查看：
+1. `logs/` 下新建的本次 run 目录。
+2. run 目录中的 `run-report.md`。
 
-## 结论
-logs 目录不是文本日志目录，而是模型检查点目录。修复后它会在训练过程中持续更新，具备明确用途。
+## 说明
+- logs 目录定位为“模型检查点与实验报告目录”，不是纯文本训练日志目录。
+- 这种结构同时满足：
+	- 快速定位单次实验结果。
+	- 明确区分 best 与 latest。
+	- 训练中断时可追溯与恢复。

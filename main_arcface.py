@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import argparse
+from datetime import datetime
 from pprint import pprint
 
 import torch
@@ -69,6 +70,89 @@ def parse_args():
     return args
 
 
+def resolve_run_paths(args):
+    if 'log' not in args.name:
+        args.name = 'logs/' + args.name
+
+    base_dir = os.path.dirname(args.name)
+    if not base_dir:
+        base_dir = 'logs'
+    base_name = os.path.basename(args.name)
+
+    # New trainings create an isolated run directory; resume keeps original path.
+    if args.resume or args.test_only or args.eval_only:
+        run_dir = base_dir
+        checkpoint_base = args.name
+    else:
+        run_id = datetime.now().strftime('%Y%m%d-%H%M%S')
+        run_dir = os.path.join(base_dir, '{}-{}'.format(base_name, run_id))
+        checkpoint_base = os.path.join(run_dir, base_name)
+
+    os.makedirs(run_dir, exist_ok=True)
+    return checkpoint_base, run_dir
+
+
+def checkpoint_meta(path):
+    if not os.path.exists(path):
+        return None
+
+    stat = os.stat(path)
+    return {
+        'path': path,
+        'size_mb': stat.st_size / (1024 * 1024),
+        'mtime': datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
+    }
+
+
+def write_run_report(report_path, args, device, run_status, best_epoch, best_val_score, latest_epoch, best_path, latest_path, interrupt_path=None):
+    lines = [
+        '# Run Report',
+        '',
+        '## Run Info',
+        '- status: {}'.format(run_status),
+        '- generated_at: {}'.format(datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
+        '- dataset: {}'.format(args.dataset),
+        '- model: {}'.format(args.model),
+        '- device: {}'.format(device),
+        '- epochs_target: {}'.format(args.epochs),
+        '- latest_epoch: {}'.format(latest_epoch),
+        '- best_epoch: {}'.format(best_epoch),
+        '- best_val_score: {:.6f}'.format(best_val_score if best_val_score != float('-inf') else float('nan')),
+        '',
+        '## Checkpoints',
+        '| type | exists | path | size_mb | modified |',
+        '| --- | --- | --- | --- | --- |'
+    ]
+
+    for ckpt_type, ckpt_path in [('best', best_path), ('latest', latest_path), ('interrupt', interrupt_path)]:
+        if ckpt_path is None:
+            lines.append('| {} | no | - | - | - |'.format(ckpt_type))
+            continue
+
+        meta = checkpoint_meta(ckpt_path)
+        if meta is None:
+            lines.append('| {} | no | {} | - | - |'.format(ckpt_type, ckpt_path))
+        else:
+            lines.append('| {} | yes | {} | {:.2f} | {} |'.format(
+                ckpt_type,
+                meta['path'],
+                meta['size_mb'],
+                meta['mtime']
+            ))
+
+    lines.extend([
+        '',
+        '## Args',
+        '```json',
+        json.dumps(vars(args), ensure_ascii=False, indent=2),
+        '```',
+        ''
+    ])
+
+    with open(report_path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(lines))
+
+
 if __name__ == '__main__':
     args = parse_args()
     dataset = args.dataset
@@ -89,13 +173,12 @@ if __name__ == '__main__':
         torch.cuda.manual_seed(seed)
         torch.backends.cudnn.benchmark = True
 
-    if 'log' not in args.name:
-        args.name = 'logs/' + args.name
-    save_dir = os.path.dirname(args.name)
-    if save_dir:
-        os.makedirs(save_dir, exist_ok=True)
     if args.test_only or args.fine_tune or args.eval_only:
         args.resume = True
+
+    args.name, run_dir = resolve_run_paths(args)
+    report_path = os.path.join(run_dir, 'run-report.md')
+
     if args.resume and not args.name:
         raise ValueError("Resuming requires folder name!")
     if args.resume:
@@ -176,6 +259,25 @@ if __name__ == '__main__':
 
         interrupted = False
         current_epoch = start_epoch
+        latest_epoch = start_epoch
+        run_status = 'running'
+
+        latest_path = args.name + '.latest'
+        best_path = args.name
+        interrupt_path = args.name + '.interrupt'
+
+        write_run_report(
+            report_path,
+            args,
+            device,
+            run_status,
+            best_epoch,
+            best_val_score,
+            latest_epoch,
+            best_path,
+            latest_path,
+            None
+        )
 
         try:
             for epoch in range(start_epoch, args.epochs):
@@ -204,17 +306,32 @@ if __name__ == '__main__':
                 }
 
                 if not args.not_save:
-                    torch.save(results, args.name + '.latest')
+                    torch.save(results, latest_path)
 
                 if eval_score >= best_val_score:
                     best_val_score = eval_score
                     best_epoch = epoch
                     results['best_val_score'] = best_val_score
                     if not args.not_save:
-                        torch.save(results, args.name)
+                        torch.save(results, best_path)
+
+                latest_epoch = epoch + 1
+                write_run_report(
+                    report_path,
+                    args,
+                    device,
+                    run_status,
+                    best_epoch,
+                    best_val_score,
+                    latest_epoch,
+                    best_path,
+                    latest_path,
+                    None
+                )
 
         except KeyboardInterrupt:
             interrupted = True
+            run_status = 'interrupted'
             print("training interrupted by user, preparing interrupt checkpoint...")
             if not args.not_save:
                 results = {
@@ -225,8 +342,21 @@ if __name__ == '__main__':
                     'loss_state': loss_fn.state_dict(),
                     'margin_model_state': metric_fc.state_dict()
                 }
-                torch.save(results, args.name + '.interrupt')
-                print("interrupt checkpoint saved to {}".format(args.name + '.interrupt'))
+                torch.save(results, interrupt_path)
+                print("interrupt checkpoint saved to {}".format(interrupt_path))
+
+            write_run_report(
+                report_path,
+                args,
+                device,
+                run_status,
+                best_epoch,
+                best_val_score,
+                current_epoch + 1,
+                best_path,
+                latest_path,
+                interrupt_path if not args.not_save else None
+            )
 
         if best_val_score == float('-inf'):
             print("no evaluation result produced before stop")
@@ -236,3 +366,17 @@ if __name__ == '__main__':
 
         if interrupted:
             print("training exited early after user interruption")
+        else:
+            run_status = 'finished'
+            write_run_report(
+                report_path,
+                args,
+                device,
+                run_status,
+                best_epoch,
+                best_val_score,
+                latest_epoch,
+                best_path,
+                latest_path,
+                None
+            )
