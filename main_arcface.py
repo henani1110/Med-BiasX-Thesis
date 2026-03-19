@@ -139,7 +139,7 @@ if __name__ == '__main__':
         raise RuntimeError('not implement for {}'.format(args.loss_fn))
 
     # ------------------------STATE CREATION------------------------
-    eval_score, best_val_score, start_epoch, best_epoch = 0.0, 0.0, 0, 0
+    eval_score, best_val_score, start_epoch, best_epoch = 0.0, float('-inf'), 0, 0
     tracker = utils.Tracker()
     if args.resume:
         model.load_state_dict(logs['model_state'])
@@ -173,24 +173,27 @@ if __name__ == '__main__':
     else:
         train_loader = DataLoader(
             train_dset, args.batch_size, shuffle=True, num_workers=4)
-        for epoch in range(start_epoch, args.epochs):
-            print("training epoch {:03d}".format(epoch))
-            tb_count = train(model, metric_fc, optim, train_loader, loss_fn, tracker, writer, tb_count, epoch, args)
 
-            if not (config.train_set == 'train+val' and epoch in range(args.epochs - 3)):
-                # save for the last three epochs
-                write = True if config.train_set == 'train+val' else False
-                print("validating after epoch {:03d}".format(epoch))
-                model.train(False)
-                metric_fc.train(False)
-                eval_score = evaluate(model, metric_fc, eval_loader, epoch, write=write)
-                model.train(True)
-                metric_fc.train(True)
-                print("eval score: {:.2f} \n".format(100 * eval_score))
+        interrupted = False
+        current_epoch = start_epoch
 
-            if eval_score > best_val_score:
-                best_val_score = eval_score
-                best_epoch = epoch
+        try:
+            for epoch in range(start_epoch, args.epochs):
+                current_epoch = epoch
+                print("training epoch {:03d}".format(epoch))
+                tb_count = train(model, metric_fc, optim, train_loader, loss_fn, tracker, writer, tb_count, epoch, args)
+
+                if not (config.train_set == 'train+val' and epoch in range(args.epochs - 3)):
+                    # save for the last three epochs
+                    write = True if config.train_set == 'train+val' else False
+                    print("validating after epoch {:03d}".format(epoch))
+                    model.train(False)
+                    metric_fc.train(False)
+                    eval_score = evaluate(model, metric_fc, eval_loader, epoch, write=write)
+                    model.train(True)
+                    metric_fc.train(True)
+                    print("eval score: {:.2f} \n".format(100 * eval_score))
+
                 results = {
                     'epoch': epoch + 1,
                     'best_val_score': best_val_score,
@@ -199,7 +202,37 @@ if __name__ == '__main__':
                     'loss_state': loss_fn.state_dict(),
                     'margin_model_state': metric_fc.state_dict()
                 }
+
                 if not args.not_save:
-                    torch.save(results, args.name)
-        print("best accuracy {:.2f} on epoch {:03d}".format(
-            100 * best_val_score, best_epoch))
+                    torch.save(results, args.name + '.latest')
+
+                if eval_score >= best_val_score:
+                    best_val_score = eval_score
+                    best_epoch = epoch
+                    results['best_val_score'] = best_val_score
+                    if not args.not_save:
+                        torch.save(results, args.name)
+
+        except KeyboardInterrupt:
+            interrupted = True
+            print("training interrupted by user, preparing interrupt checkpoint...")
+            if not args.not_save:
+                results = {
+                    'epoch': current_epoch + 1,
+                    'best_val_score': best_val_score,
+                    'model_state': model.state_dict(),
+                    'optim_state': optim.state_dict(),
+                    'loss_state': loss_fn.state_dict(),
+                    'margin_model_state': metric_fc.state_dict()
+                }
+                torch.save(results, args.name + '.interrupt')
+                print("interrupt checkpoint saved to {}".format(args.name + '.interrupt'))
+
+        if best_val_score == float('-inf'):
+            print("no evaluation result produced before stop")
+        else:
+            print("best accuracy {:.2f} on epoch {:03d}".format(
+                100 * best_val_score, best_epoch))
+
+        if interrupted:
+            print("training exited early after user interruption")
