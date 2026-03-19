@@ -70,6 +70,10 @@ def parse_args():
                         help="linearly warm up auxiliary losses (SupCon/DDC/ECC) over N epochs")
     parser.add_argument("--aux-loss-weight", type=float, default=1.0,
                         help="max weight multiplier for auxiliary losses after warmup")
+    parser.add_argument('--no-ddc', action='store_true',
+                        help='disable DDC auxiliary loss (KL-based term) for ablation')
+    parser.add_argument('--no-ecc', action='store_true',
+                        help='disable ECC auxiliary loss (energy constraint term) for ablation')
     args = parser.parse_args()
     return args
 

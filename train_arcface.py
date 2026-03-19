@@ -134,30 +134,37 @@ def train(model, m_model, optim, train_loader, loss_fn, tracker, writer, tb_coun
         ce_logits_safe = torch.clamp(ce_logits, -30.0, 30.0)
         q_logits_safe = torch.clamp(q_logits, -30.0, 30.0)
 
-        kl1 = F.kl_div(
-            F.log_softmax(a_logits_safe, dim=-1),
-            F.softmax(ce_logits_safe, dim=-1),
-            reduction='batchmean'
-        )
-        kl2 = F.kl_div(
-            F.log_softmax(a_logits_safe, dim=-1),
-            F.softmax(q_logits_safe, dim=-1),
-            reduction='batchmean'
-        )
+        # DDC (KL-based alignment) can be disabled for ablation via --no-ddc.
+        if not getattr(args, 'no_ddc', False):
+            kl1 = F.kl_div(
+                F.log_softmax(a_logits_safe, dim=-1),
+                F.softmax(ce_logits_safe, dim=-1),
+                reduction='batchmean'
+            )
+            kl2 = F.kl_div(
+                F.log_softmax(a_logits_safe, dim=-1),
+                F.softmax(q_logits_safe, dim=-1),
+                reduction='batchmean'
+            )
 
-        kl2_safe = kl2.clamp_min(EPS)
-        bias = torch.log1p((kl1 / kl2_safe).clamp(max=1e4))
-        direction = torch.exp((kl1 - kl2).clamp(min=-EXP_CLAMP, max=EXP_CLAMP))
-        direction = torch.where(kl1 > kl2, torch.zeros_like(direction), direction)
-        kl_loss = torch.nan_to_num(direction + bias, nan=0.0, posinf=1e4, neginf=0.0)
-        kl_loss = kl_loss.clamp(max=50.0)
-        loss += aux_scale * kl_loss
+            kl2_safe = kl2.clamp_min(EPS)
+            bias = torch.log1p((kl1 / kl2_safe).clamp(max=1e4))
+            direction = torch.exp((kl1 - kl2).clamp(min=-EXP_CLAMP, max=EXP_CLAMP))
+            direction = torch.where(kl1 > kl2, torch.zeros_like(direction), direction)
+            kl_loss = torch.nan_to_num(direction + bias, nan=0.0, posinf=1e4, neginf=0.0)
+            kl_loss = kl_loss.clamp(max=50.0)
+            loss += aux_scale * kl_loss
+        else:
+            kl1 = torch.tensor(0.0, device=DEVICE)
+            kl2 = torch.tensor(0.0, device=DEVICE)
 
-        Ec_joint = torch.logsumexp(ce_logits_safe, dim=1)
-        Ec_q = torch.logsumexp(q_logits_safe, dim=1)
-        En = torch.pow(F.relu(args.m +Ec_joint - Ec_q), 2).mean()
-        En = torch.nan_to_num(En, nan=0.0, posinf=1e4, neginf=0.0).clamp(max=50.0)
-        loss += aux_scale * En
+        # ECC (energy constraint) can be disabled for ablation via --no-ecc.
+        if not getattr(args, 'no_ecc', False):
+            Ec_joint = torch.logsumexp(ce_logits_safe, dim=1)
+            Ec_q = torch.logsumexp(q_logits_safe, dim=1)
+            En = torch.pow(F.relu(args.m + Ec_joint - Ec_q), 2).mean()
+            En = torch.nan_to_num(En, nan=0.0, posinf=1e4, neginf=0.0).clamp(max=50.0)
+            loss += aux_scale * En
 
         if not torch.isfinite(loss):
             print('[warn] non-finite loss detected. skip batch.')
