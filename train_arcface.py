@@ -10,23 +10,27 @@ from torch.autograd import Variable
 from tensorboardX import SummaryWriter
 
 # writer_tsne = SummaryWriter('runs/tsne')
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else ('mps' if torch.backends.mps.is_available() else 'cpu'))
 
 def compute_supcon_loss(feats, qtype):
     tau = 1.0
-    if isinstance(qtype, tuple):
-      i = 0
-      dic = {}
-      for item in qtype:
-          if item not in dic:
-              dic[item] = i
-              i = i + 1
-      tau = 1.0
-      qtype = torch.tensor([dic[item] for item in qtype]).cuda()
+    if torch.is_tensor(qtype):
+        qtype = qtype.to(DEVICE).long()
+    else:
+        mapped = []
+        idx_map = {}
+        next_idx = 0
+        for item in qtype:
+            if item not in idx_map:
+                idx_map[item] = next_idx
+                next_idx += 1
+            mapped.append(idx_map[item])
+        qtype = torch.tensor(mapped, device=DEVICE, dtype=torch.long)
     feats_filt = F.normalize(feats, dim=1)
     targets_r = qtype.reshape(-1, 1)
     targets_c = qtype.reshape(1, -1)
     mask = targets_r == targets_c
-    mask = mask.int().cuda()
+    mask = mask.int().to(DEVICE)
     feats_sim = torch.exp(torch.matmul(feats_filt, feats_filt.T) / tau)
     negatives = feats_sim*(1.0 - mask)
     negative_sum = torch.sum(negatives)
@@ -79,11 +83,11 @@ def train(model, m_model, optim, train_loader, loss_fn, tracker, writer, tb_coun
     acc_trk = tracker.track('acc', tracker.MovingMeanMonitor(momentum=0.99))
 
     for v, q, a, mg, q_id, f1, type, a_type in loader:
-        v = v.cuda()
-        q = q.cuda()
-        a = a.cuda()
-        mg = mg.cuda()
-        f1 = f1.cuda()
+        v = v.to(DEVICE)
+        q = q.to(DEVICE)
+        a = a.to(DEVICE)
+        mg = mg.to(DEVICE)
+        f1 = f1.to(DEVICE)
         gt = torch.argmax(a, 1)
 
         ans = []
@@ -97,7 +101,7 @@ def train(model, m_model, optim, train_loader, loss_fn, tracker, writer, tb_coun
             else:
                 ans_tokens.append(train_loader.dataset.dictionary.word2idx[w])
         ans_tokens = torch.from_numpy(np.array(ans_tokens))
-        ans_tokens = Variable(ans_tokens).cuda()
+        ans_tokens = Variable(ans_tokens).to(DEVICE)
 
         hidden_, ce_logits, q_logits, a_logits = model(v, q, ans_tokens)
         hidden, pred = m_model(hidden_, ce_logits, mg, epoch, a)
@@ -165,10 +169,10 @@ def evaluate(model, m_model, dataloader, epoch=0, write=False):
     qat_score = {}
     qat_total = {}
     for v, q, a, mg, q_id, f1, qtype, a_type in tqdm(dataloader, ncols=0, leave=True):
-        v = v.cuda()
-        q = q.cuda()
-        mg = mg.cuda()
-        a = a.cuda()
+        v = v.to(DEVICE)
+        q = q.to(DEVICE)
+        mg = mg.to(DEVICE)
+        a = a.to(DEVICE)
         hidden_, ce_logits, q_logits, _ = model(v, q, None)
         hidden, pred = m_model(hidden_, ce_logits, mg, epoch, a)
         
@@ -180,20 +184,22 @@ def evaluate(model, m_model, dataloader, epoch=0, write=False):
 
         if write:
             results = saved_for_eval(dataloader, results, q_id, pred)
-        batch_score = compute_score_with_logits(pred, a.cuda()).sum(1)
+        batch_score = compute_score_with_logits(pred, a).sum(1)
         score += batch_score.sum()
 
         for i in range(len(batch_score)):
-            qat_score[qtype[i]] = qat_score.get(qtype[i], 0) + batch_score[i]
-            qat_total[qtype[i]] = qat_total.get(qtype[i], 0) + 1
-            qat_score[a_type[i]] = qat_score.get(a_type[i], 0) + batch_score[i]
-            qat_total[a_type[i]] = qat_total.get(a_type[i], 0) + 1  
+            q_key = str(qtype[i])
+            a_key = str(a_type[i])
+            qat_score[q_key] = qat_score.get(q_key, 0) + batch_score[i]
+            qat_total[q_key] = qat_total.get(q_key, 0) + 1
+            qat_score[a_key] = qat_score.get(a_key, 0) + batch_score[i]
+            qat_total[a_key] = qat_total.get(a_key, 0) + 1  
         
     print(score, len(dataloader.dataset))
     score = score / len(dataloader.dataset)
 
     for key in qat_score:
-        print(key + ": " + str((qat_score[key]/qat_total[key]*100).item()))
+        print(str(key) + ": " + str((qat_score[key]/qat_total[key]*100).item()))
     
     # if write:
     #     print("saving prediction results to disk...")

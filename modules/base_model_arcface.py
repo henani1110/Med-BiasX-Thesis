@@ -85,7 +85,7 @@ class ArcMarginProduct(nn.Module):
         beta = 1.0 - (beta_factor * 0.1)
 
         #Calculate the learnable instance-level margins, Subsection 3.3 in main paper
-        learned_mg = torch.where(m > 1e-12, learned_mg.double(), -1000.0).float()
+        learned_mg = torch.where(m > 1e-12, learned_mg, torch.full_like(learned_mg, -1000.0)).float()
         margin = F.softmax(learned_mg / self.temp, dim=1)
         
         # Perform randomization as mentioned in Section 3 of main paper

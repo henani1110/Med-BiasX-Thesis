@@ -76,7 +76,7 @@ class ArcMarginProduct(nn.Module):
         beta_factor = epoch // 10
         beta = 1.0 - (beta_factor * 0.1)
 
-        learned_mg = torch.where(m > 1e-12, learned_mg.double(), -1000.0).float()
+        learned_mg = torch.where(m > 1e-12, learned_mg, torch.full_like(learned_mg, -1000.0)).float()
         margin = F.softmax(learned_mg / self.temp, dim=1)
         if config.randomization:
             m = torch.normal(mean=m, std=self.std)

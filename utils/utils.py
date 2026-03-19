@@ -3,6 +3,7 @@ import json
 import errno
 import re
 import collections
+from collections.abc import Mapping, Sequence
 import numpy as np
 from collections import defaultdict, Counter
 import matplotlib.pyplot as plt
@@ -14,7 +15,6 @@ import utils.config as config
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch._six import string_classes
 from torch.utils.data.dataloader import default_collate
 import math
 import time
@@ -22,6 +22,8 @@ from utils.dataset import Dictionary, VQAFeatureDataset
 from vqa_eval.PythonEvaluationTools.vqaEvaluation.vqaEval import VQAEval
 
 EPS = 1e-7
+string_classes = (str, bytes)
+
 numpy_type_map = {
     'float64': torch.DoubleTensor,
     'float32': torch.FloatTensor,
@@ -203,9 +205,9 @@ def trim_collate(batch):
         return torch.DoubleTensor(batch)
     elif isinstance(batch[0], string_classes):
         return batch
-    elif isinstance(batch[0], collections.Mapping):
+    elif isinstance(batch[0], Mapping):
         return {key: default_collate([d[key] for d in batch]) for key in batch[0]}
-    elif isinstance(batch[0], collections.Sequence):
+    elif isinstance(batch[0], Sequence):
         transposed = zip(*batch)
         return [trim_collate(samples) for samples in transposed]
 

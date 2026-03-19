@@ -30,6 +30,10 @@ def parse_args():
                         help='number of dimension in last layer')
     parser.add_argument('--model', type=str, default='baseline_newatt',
                         help='model structure')
+    parser.add_argument('--base-model', type=str, default='BAN',
+                        help='backbone identifier used by dataset branches')
+    parser.add_argument('--feat-dim', type=int, default=1024,
+                        help='visual feature dimension for optional MEVF branch')
     parser.add_argument('--name', type=str, default='exp0.pth',
                         help='saved model name')
     parser.add_argument('--name-new', type=str, default=None,
@@ -74,16 +78,22 @@ if __name__ == '__main__':
         args.batch_size = 64
     print(args)
 
-    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
-    cudnn.benchmark = True
+    use_cuda = torch.cuda.is_available()
+    if use_cuda:
+        os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
+        cudnn.benchmark = True
 
     seed = args.seed
     torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.backends.cudnn.benchmark = True
+    if use_cuda:
+        torch.cuda.manual_seed(seed)
+        torch.backends.cudnn.benchmark = True
 
     if 'log' not in args.name:
         args.name = 'logs/' + args.name
+    save_dir = os.path.dirname(args.name)
+    if save_dir:
+        os.makedirs(save_dir, exist_ok=True)
     if args.test_only or args.fine_tune or args.eval_only:
         args.resume = True
     if args.resume and not args.name:
@@ -95,10 +105,10 @@ if __name__ == '__main__':
     # ------------------------DATASET CREATION--------------------
     dictionary = Dictionary.load_from_file(config.dict_path)
     if args.test_only:
-        eval_dset = VQAFeatureDataset('test', dictionary, dataset)
+        eval_dset = VQAFeatureDataset('test', dictionary, args)
     else:
-        train_dset = VQAFeatureDataset('train', dictionary, dataset)
-        eval_dset = VQAFeatureDataset('test', dictionary, dataset)
+        train_dset = VQAFeatureDataset('train', dictionary, args)
+        eval_dset = VQAFeatureDataset('test', dictionary, args)
     # if config.train_set == 'train+val' and not args.test_only:
     #     train_dset = train_dset + eval_dset
     #     eval_dset = VQAFeatureDataset('test', dictionary)
@@ -114,8 +124,10 @@ if __name__ == '__main__':
     # ------------------------MODEL CREATION------------------------
     constructor = 'build_{}'.format(args.model)
     model, metric_fc = getattr(base_model, constructor)(eval_dset, args.num_hid)
-    model = model.cuda()
-    metric_fc = metric_fc.cuda()
+    device = torch.device('cuda' if torch.cuda.is_available() else ('mps' if torch.backends.mps.is_available() else 'cpu'))
+    print('using device:', device)
+    model = model.to(device)
+    metric_fc = metric_fc.to(device)
     model.w_emb.init_embedding(config.glove_embed_path)
 
     # model = nn.DataParallel(model).cuda()
