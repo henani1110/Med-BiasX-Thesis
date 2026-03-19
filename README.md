@@ -2,13 +2,25 @@
 PyTorch code for MICCAI 2025 paper "Med-BiasX: Robust Medical Visual Question Answering with Language Biases".  
   
 # Requirements
-* python 3.7.11
-* pytorch 1.10.2+cu113
-* torchvision 0.11.3+cu113
+* python 3.10
+* pytorch 2.6.0
+* torchvision 0.21.0
 
 # Installation
+
+**Option 1 – Miniconda / Anaconda (recommended)**
+
+Create and activate the environment in one step using the provided `environment.yml`:
+
 ```bash
-conda create -n Med-BiasX python=3.7
+conda env create -f environment.yml
+conda activate Med-BiasX
+```
+
+**Option 2 – Create environment manually, then pip-install**
+
+```bash
+conda create -n Med-BiasX python=3.10
 conda activate Med-BiasX
 pip install -r requirements.txt
 ```
