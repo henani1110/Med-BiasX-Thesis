@@ -12,7 +12,8 @@ from tensorboardX import SummaryWriter
 # writer_tsne = SummaryWriter('runs/tsne')
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else ('mps' if torch.backends.mps.is_available() else 'cpu'))
 EPS = 1e-8
-EXP_CLAMP = 20.0
+KL_DENOM_EPS = 1e-4
+EXP_CLAMP = 10.0
 
 def compute_supcon_loss(feats, qtype):
     tau = 1.0
@@ -126,9 +127,11 @@ def train(model, m_model, optim, train_loader, loss_fn, tracker, writer, tb_coun
         else:
             loss = loss_fn(hidden, a, **dict_args)
         
+        aux_total = torch.tensor(0.0, device=DEVICE)
+
         # Add the supcon loss, as mentioned in Section 3 of main paper.
         if config.supcon:
-            loss = loss + aux_scale * compute_supcon_loss(hidden_, gt)
+            aux_total = aux_total + compute_supcon_loss(hidden_, gt)
 
         a_logits_safe = torch.clamp(a_logits, -30.0, 30.0)
         ce_logits_safe = torch.clamp(ce_logits, -30.0, 30.0)
@@ -147,13 +150,13 @@ def train(model, m_model, optim, train_loader, loss_fn, tracker, writer, tb_coun
                 reduction='batchmean'
             )
 
-            kl2_safe = kl2.clamp_min(EPS)
+            kl2_safe = kl2.clamp_min(KL_DENOM_EPS)
             bias = torch.log1p((kl1 / kl2_safe).clamp(max=1e4))
             direction = torch.exp((kl1 - kl2).clamp(min=-EXP_CLAMP, max=EXP_CLAMP))
             direction = torch.where(kl1 > kl2, torch.zeros_like(direction), direction)
             kl_loss = torch.nan_to_num(direction + bias, nan=0.0, posinf=1e4, neginf=0.0)
             kl_loss = kl_loss.clamp(max=50.0)
-            loss += aux_scale * kl_loss
+            aux_total = aux_total + kl_loss
         else:
             kl1 = torch.tensor(0.0, device=DEVICE)
             kl2 = torch.tensor(0.0, device=DEVICE)
@@ -164,7 +167,14 @@ def train(model, m_model, optim, train_loader, loss_fn, tracker, writer, tb_coun
             Ec_q = torch.logsumexp(q_logits_safe, dim=1)
             En = torch.pow(F.relu(args.m + Ec_joint - Ec_q), 2).mean()
             En = torch.nan_to_num(En, nan=0.0, posinf=1e4, neginf=0.0).clamp(max=50.0)
-            loss += aux_scale * En
+            aux_total = aux_total + En
+
+        scaled_aux = aux_scale * aux_total
+        max_aux_loss = float(getattr(args, 'max_aux_loss', 0.0))
+        if max_aux_loss > 0:
+            scaled_aux = scaled_aux.clamp(max=max_aux_loss)
+
+        loss = loss + scaled_aux
 
         if not torch.isfinite(loss):
             print('[warn] non-finite loss detected. skip batch.')
