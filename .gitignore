@@ -1,0 +1,11 @@
+# Python cache
+__pycache__/
+**/__pycache__/
+*.py[cod]
+
+# Runtime outputs
+logs/
+runs/
+
+# macOS
+.DS_Store
