@@ -6,6 +6,7 @@ __pycache__/
 # Runtime outputs
 logs/
 runs/
+data/
 
 # macOS
 .DS_Store
