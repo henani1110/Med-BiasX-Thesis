@@ -11,8 +11,6 @@ from tensorboardX import SummaryWriter
 
 # writer_tsne = SummaryWriter('runs/tsne')
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else ('mps' if torch.backends.mps.is_available() else 'cpu'))
-EPS = 1e-8
-EXP_CLAMP = 20.0
 
 def compute_supcon_loss(feats, qtype):
     tau = 1.0
@@ -29,20 +27,19 @@ def compute_supcon_loss(feats, qtype):
             mapped.append(idx_map[item])
         qtype = torch.tensor(mapped, device=DEVICE, dtype=torch.long)
     feats_filt = F.normalize(feats, dim=1)
-    logits = torch.matmul(feats_filt, feats_filt.T) / tau
-    logits = logits - logits.max(dim=1, keepdim=True).values.detach()
+    targets_r = qtype.reshape(-1, 1)
+    targets_c = qtype.reshape(1, -1)
+    mask = targets_r == targets_c
+    mask = mask.int().to(DEVICE)
+    feats_sim = torch.exp(torch.matmul(feats_filt, feats_filt.T) / tau)
+    negatives = feats_sim*(1.0 - mask)
+    negative_sum = torch.sum(negatives)
+    positives = torch.log(feats_sim/negative_sum)*mask
+    positive_sum = torch.sum(positives)
+    positive_sum = positive_sum/torch.sum(mask)
 
-    bsz = qtype.size(0)
-    logits_mask = torch.ones((bsz, bsz), device=DEVICE) - torch.eye(bsz, device=DEVICE)
-    pos_mask = (qtype.reshape(-1, 1) == qtype.reshape(1, -1)).float() * logits_mask
-
-    exp_logits = torch.exp(logits) * logits_mask
-    log_prob = logits - torch.log(exp_logits.sum(dim=1, keepdim=True).clamp_min(EPS))
-
-    pos_count = pos_mask.sum(dim=1).clamp_min(1.0)
-    mean_log_prob_pos = (pos_mask * log_prob).sum(dim=1) / pos_count
-    sup_con_loss = -mean_log_prob_pos.mean()
-    return torch.nan_to_num(sup_con_loss, nan=0.0, posinf=1e4, neginf=0.0)
+    sup_con_loss = -1*torch.mean(positive_sum)
+    return sup_con_loss
 
 def compute_acc(logits, labels):
     pred = torch.argmax(logits, dim = 1)
@@ -84,12 +81,6 @@ def train(model, m_model, optim, train_loader, loss_fn, tracker, writer, tb_coun
     loader = tqdm(train_loader, ncols=0)
     loss_trk = tracker.track('loss', tracker.MovingMeanMonitor(momentum=0.99))
     acc_trk = tracker.track('acc', tracker.MovingMeanMonitor(momentum=0.99))
-    warmup_epochs = max(0, int(getattr(args, 'aux_warmup_epochs', 0)))
-    aux_max_weight = float(getattr(args, 'aux_loss_weight', 1.0))
-    if warmup_epochs <= 0:
-        aux_scale = aux_max_weight
-    else:
-        aux_scale = min(1.0, float(epoch + 1) / float(warmup_epochs)) * aux_max_weight
 
     for v, q, a, mg, q_id, f1, type, a_type in loader:
         v = v.to(DEVICE)
@@ -128,66 +119,29 @@ def train(model, m_model, optim, train_loader, loss_fn, tracker, writer, tb_coun
         
         # Add the supcon loss, as mentioned in Section 3 of main paper.
         if config.supcon:
-            loss = loss + aux_scale * compute_supcon_loss(hidden_, gt)
+            loss = loss + compute_supcon_loss(hidden_, gt)
 
-        a_logits_safe = torch.clamp(a_logits, -30.0, 30.0)
-        ce_logits_safe = torch.clamp(ce_logits, -30.0, 30.0)
-        q_logits_safe = torch.clamp(q_logits, -30.0, 30.0)
+        kl1 = F.kl_div(F.log_softmax(a_logits, dim=-1), F.softmax(ce_logits, dim=-1), reduction='sum') # batchmean
+        kl2 = F.kl_div(F.log_softmax(a_logits, dim=-1), F.softmax(q_logits, dim=-1), reduction='sum')
+        # kl_loss = torch.exp(kl2 - kl1)
+        bias = torch.log(1 + kl1 / kl2)
+        direction = torch.exp(kl1 - kl2)
+        if kl1 > kl2:
+            direction = 0
+        kl_loss = direction + bias
+        loss += kl_loss
 
-        kl1 = F.kl_div(
-            F.log_softmax(a_logits_safe, dim=-1),
-            F.softmax(ce_logits_safe, dim=-1),
-            reduction='batchmean'
-        )
-        kl2 = F.kl_div(
-            F.log_softmax(a_logits_safe, dim=-1),
-            F.softmax(q_logits_safe, dim=-1),
-            reduction='batchmean'
-        )
-
-        kl2_safe = kl2.clamp_min(EPS)
-        bias = torch.log1p((kl1 / kl2_safe).clamp(max=1e4))
-        direction = torch.exp((kl1 - kl2).clamp(min=-EXP_CLAMP, max=EXP_CLAMP))
-        direction = torch.where(kl1 > kl2, torch.zeros_like(direction), direction)
-        kl_loss = torch.nan_to_num(direction + bias, nan=0.0, posinf=1e4, neginf=0.0)
-        kl_loss = kl_loss.clamp(max=50.0)
-        loss += aux_scale * kl_loss
-
-        Ec_joint = torch.logsumexp(ce_logits_safe, dim=1)
-        Ec_q = torch.logsumexp(q_logits_safe, dim=1)
+        Ec_joint = torch.logsumexp(ce_logits, dim=1)
+        Ec_q = torch.logsumexp(q_logits, dim=1)
         En = torch.pow(F.relu(args.m +Ec_joint - Ec_q), 2).mean()
-        En = torch.nan_to_num(En, nan=0.0, posinf=1e4, neginf=0.0).clamp(max=50.0)
-        loss += aux_scale * En
-
-        if not torch.isfinite(loss):
-            print('[warn] non-finite loss detected. skip batch.')
-            print('ce_logits finite:', torch.isfinite(ce_logits).all().item())
-            print('q_logits finite:', torch.isfinite(q_logits).all().item())
-            print('a_logits finite:', torch.isfinite(a_logits).all().item())
-            print('kl1:', float(kl1.detach().cpu()), 'kl2:', float(kl2.detach().cpu()))
-            optim.zero_grad()
-            continue
+        loss += En
         
         writer.add_scalars('data/losses', {
         }, tb_count)
         tb_count += 1
 
         loss.backward()
-
-        all_params = list(model.parameters()) + list(m_model.parameters())
-        nn.utils.clip_grad_norm_(all_params, 0.25)
-
-        grads_finite = True
-        for p in all_params:
-            if p.grad is not None and not torch.isfinite(p.grad).all():
-                grads_finite = False
-                break
-
-        if not grads_finite:
-            print('[warn] non-finite gradients detected. skip optimizer step.')
-            optim.zero_grad()
-            continue
-
+        nn.utils.clip_grad_norm_(model.parameters(), 0.25)
         optim.step()
         optim.zero_grad()
         

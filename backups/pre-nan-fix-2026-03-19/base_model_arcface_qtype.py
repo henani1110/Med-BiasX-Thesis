@@ -20,12 +20,11 @@ class BaseModel(nn.Module):
         self.q_net = q_net
         self.v_net = v_net
         self.weight = SimpleClassifier(num_hid, num_hid * 2, num_class, 0.5)
-        self.qweight = SimpleClassifier(num_hid, num_hid * 2, num_class, 0.5)
-        self.weight_a = nn.Parameter(torch.FloatTensor(num_class, 300))
+        #self.qweight = SimpleClassifier(num_hid, num_hid * 2, 65, 0.5)
         # self.weight = nn.Parameter(torch.FloatTensor(num_class, num_hid))
         # nn.init.xavier_normal_(self.weight)
 
-    def forward(self, v, q, ans_tokens):
+    def forward(self, v, q):
         """
         Forward=
         v: [batch, num_objs, obj_dim]
@@ -41,18 +40,12 @@ class BaseModel(nn.Module):
 
         q_repr = self.q_net(q_emb)
         v_repr = self.v_net(v_emb)
-        joint_repr = q_repr * v_repr #Final multimodal features, denoted as x in the main paper. This is the UpDn model.
+        joint_repr = q_repr * v_repr
 
-        #This is the bias injecting component, as shown in subsection 3.4 of the main paper
         ce_logits = self.weight(joint_repr)
-        q_logits = self.qweight(q_repr)
-
-        if ans_tokens is None:
-            return joint_repr, ce_logits, q_logits, None
-        a_emb = self.w_emb(ans_tokens).view(ans_tokens.size(0), -1)  # [512, 300]
-        a_logits = F.linear(a_emb, self.weight_a)
+        #q_logits = self.qweight(joint_repr)
         
-        return joint_repr, ce_logits, q_logits, a_logits
+        return joint_repr, ce_logits#, q_logits
 
 
 class ArcMarginProduct(nn.Module):
@@ -73,31 +66,24 @@ class ArcMarginProduct(nn.Module):
         nn.init.xavier_uniform_(self.weight)
         self.easy_margin = easy_margin
         self.std = 0.1
-        self.temp = config.temp
+        self.temp = 0.2
 
     def forward(self, input, learned_mg, m, epoch, label):
-        cosine = F.linear(F.normalize(input), F.normalize(self.weight)).clamp(-1.0 + 1e-7, 1.0 - 1e-7)
+        cosine = F.linear(F.normalize(input), F.normalize(self.weight))
         if self.training is False:
             return None, cosine
-        
-        #Set beta (Subsecion 3.3 in main paper
-        beta_factor = epoch // 15
+
+        beta_factor = epoch // 10
         beta = 1.0 - (beta_factor * 0.1)
 
-        #Calculate the learnable instance-level margins, Subsection 3.3 in main paper
         learned_mg = torch.where(m > 1e-12, learned_mg, torch.full_like(learned_mg, -1000.0)).float()
         margin = F.softmax(learned_mg / self.temp, dim=1)
-        
-        # Perform randomization as mentioned in Section 3 of main paper
         if config.randomization:
             m = torch.normal(mean=m, std=self.std)
-            
-        #Combine the margins, as in Subsection 3.3 of main paper.
         if config.learnable_margins:
             m[label != 0] = beta * m[label != 0] + (1 - beta) * margin[label != 0]
         m = 1 - m
 
-        #Compute the AdaArc angular margins and the corresponding logits
         self.cos_m = torch.cos(m)
         self.sin_m = torch.sin(m)
         self.th = torch.cos(math.pi - m)

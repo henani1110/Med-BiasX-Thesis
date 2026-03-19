@@ -66,10 +66,6 @@ def parse_args():
         help="choose dataset",
     )
     parser.add_argument("--seed", type=int, default=1111, help="random seed")
-    parser.add_argument("--aux-warmup-epochs", type=int, default=5,
-                        help="linearly warm up auxiliary losses (SupCon/DDC/ECC) over N epochs")
-    parser.add_argument("--aux-loss-weight", type=float, default=1.0,
-                        help="max weight multiplier for auxiliary losses after warmup")
     args = parser.parse_args()
     return args
 

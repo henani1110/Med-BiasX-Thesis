@@ -69,7 +69,7 @@ class ArcMarginProduct(nn.Module):
         self.temp = 0.2
 
     def forward(self, input, learned_mg, m, epoch, label):
-        cosine = F.linear(F.normalize(input), F.normalize(self.weight))
+        cosine = F.linear(F.normalize(input), F.normalize(self.weight)).clamp(-1.0 + 1e-7, 1.0 - 1e-7)
         if self.training is False:
             return None, cosine
 

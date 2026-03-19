@@ -84,12 +84,6 @@ def train(model, m_model, optim, train_loader, loss_fn, tracker, writer, tb_coun
     loader = tqdm(train_loader, ncols=0)
     loss_trk = tracker.track('loss', tracker.MovingMeanMonitor(momentum=0.99))
     acc_trk = tracker.track('acc', tracker.MovingMeanMonitor(momentum=0.99))
-    warmup_epochs = max(0, int(getattr(args, 'aux_warmup_epochs', 0)))
-    aux_max_weight = float(getattr(args, 'aux_loss_weight', 1.0))
-    if warmup_epochs <= 0:
-        aux_scale = aux_max_weight
-    else:
-        aux_scale = min(1.0, float(epoch + 1) / float(warmup_epochs)) * aux_max_weight
 
     for v, q, a, mg, q_id, f1, type, a_type in loader:
         v = v.to(DEVICE)
@@ -128,7 +122,7 @@ def train(model, m_model, optim, train_loader, loss_fn, tracker, writer, tb_coun
         
         # Add the supcon loss, as mentioned in Section 3 of main paper.
         if config.supcon:
-            loss = loss + aux_scale * compute_supcon_loss(hidden_, gt)
+            loss = loss + compute_supcon_loss(hidden_, gt)
 
         a_logits_safe = torch.clamp(a_logits, -30.0, 30.0)
         ce_logits_safe = torch.clamp(ce_logits, -30.0, 30.0)
@@ -151,13 +145,13 @@ def train(model, m_model, optim, train_loader, loss_fn, tracker, writer, tb_coun
         direction = torch.where(kl1 > kl2, torch.zeros_like(direction), direction)
         kl_loss = torch.nan_to_num(direction + bias, nan=0.0, posinf=1e4, neginf=0.0)
         kl_loss = kl_loss.clamp(max=50.0)
-        loss += aux_scale * kl_loss
+        loss += kl_loss
 
         Ec_joint = torch.logsumexp(ce_logits_safe, dim=1)
         Ec_q = torch.logsumexp(q_logits_safe, dim=1)
         En = torch.pow(F.relu(args.m +Ec_joint - Ec_q), 2).mean()
         En = torch.nan_to_num(En, nan=0.0, posinf=1e4, neginf=0.0).clamp(max=50.0)
-        loss += aux_scale * En
+        loss += En
 
         if not torch.isfinite(loss):
             print('[warn] non-finite loss detected. skip batch.')
