@@ -363,6 +363,12 @@ class VQAFeatureDataset(Dataset):
         freq_margin0 = torch.zeros(self.num_ans_candidates)
 
         if labels is not None:
+            labels = torch.as_tensor(labels, dtype=torch.long)
+            scores = torch.as_tensor(scores, dtype=target.dtype)
+            margin_label = torch.as_tensor(margin_label, dtype=torch.long)
+            margin_score = torch.as_tensor(margin_score, dtype=target_margin.dtype)
+            freq_label = torch.as_tensor(freq_label, dtype=torch.long)
+            per0 = torch.as_tensor(per0, dtype=freq_margin0.dtype)
             target.scatter_(0, labels, scores)
             target_margin.scatter_(0, margin_label, margin_score)
             freq_margin0.scatter_(0, freq_label, per0)
